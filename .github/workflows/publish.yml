@@ -1,0 +1,56 @@
+name: 'Publish MC-Print Agent Releases'
+
+on:
+  push:
+    tags:
+      - 'v*' # Kích hoạt khi đẩy thẻ tag bắt đầu bằng chữ "v" (ví dụ: v1.0.0, v1.1.1)
+
+permissions:
+  contents: write
+
+jobs:
+  publish-tauri:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: 'macos-latest' # Build macOS Apple Silicon
+            args: '--target aarch64-apple-darwin'
+          - platform: 'macos-latest' # Build macOS Intel
+            args: '--target x86_64-apple-darwin'
+          - platform: 'windows-latest' # Build Windows (.exe & .msi)
+            args: ''
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Install app dependencies and build frontend
+        run: |
+          npm install
+          npm run build
+
+      - name: Build and Publish Tauri App
+        uses: tauri-apps/tauri-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: mc-print-agent-${{ github.ref_name }}
+          releaseName: 'MC-Print Agent ${{ github.ref_name }}'
+          releaseBody: 'Phiên bản tự động đóng gói của MerchantConnect Print Agent dành cho Windows và macOS.'
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
