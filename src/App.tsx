@@ -167,6 +167,19 @@ function App() {
         </div>
       </header>
 
+      {/* Warning banner when no physical printer is found */}
+      {printers.length === 0 && (
+        <div className="warning-banner">
+          <span className="warning-icon">⚠️</span>
+          <div className="warning-content">
+            <div className="warning-title">Không phát hiện máy in vật lý nào</div>
+            <div className="warning-action-text">
+              Hệ thống đang chạy ở <strong>chế độ giả lập</strong>. Để in thực tế, vui lòng cắm nguồn/cáp kết nối và thêm máy in trong <strong>Cài đặt hệ thống (Printers & Scanners)</strong> của macOS.
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Main configuration grid */}
       <section className="config-grid">
         <div className="config-card">

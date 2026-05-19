@@ -93,43 +93,40 @@ async fn handle_print(Json(payload): Json<PrintRequest>) -> Result<Json<serde_js
 
                 match lp_cmd.output() {
                     Ok(output) => {
+                        let _ = std::fs::remove_file(&file_path);
                         if output.status.success() {
                             emit_log("SUCCESS", "Hóa đơn đã được gửi thành công đến System Spooler!", None);
-                            let _ = std::fs::remove_file(file_path);
                             return Ok(Json(serde_json::json!({ "success": true, "message": "In thành công" })));
                         } else {
                             let err_msg = String::from_utf8_lossy(&output.stderr).to_string();
-                            let err_lower = err_msg.to_lowercase();
-                            // Fallback gracefully if no printer is connected/configured on development Mac
-                            if err_lower.contains("no destinations") || err_lower.contains("no default destination") || err_lower.contains("no default printer") || err_lower.contains("no system default") {
-                                emit_log("SUCCESS", "⚠️ Không tìm thấy máy in vật lý. Đã ghi nhận hóa đơn giả lập thành công!", None);
-                                let _ = std::fs::remove_file(file_path);
-                                return Ok(Json(serde_json::json!({ "success": true, "message": "In giả lập thành công" })));
-                            }
-                            emit_log("ERROR", &format!("Lỗi lệnh lp: {}", err_msg), None);
-                            let _ = std::fs::remove_file(file_path);
-                            return Err((StatusCode::INTERNAL_SERVER_ERROR, err_msg));
+                            let friendly_err = if err_msg.contains("No destinations") || err_msg.contains("no default destination") || err_msg.contains("no default printer") || err_msg.contains("no system default") {
+                                "Lỗi: Không tìm thấy máy in vật lý nào được cấu hình trên hệ thống. Vui lòng cấu hình máy in trong System Settings -> Printers & Scanners.".to_string()
+                            } else {
+                                format!("Lỗi lệnh in CUPS: {}", err_msg.trim())
+                            };
+                            emit_log("ERROR", &friendly_err, None);
+                            return Err((StatusCode::INTERNAL_SERVER_ERROR, friendly_err));
                         }
                     }
-                    Err(_e) => {
-                        // Fallback gracefully if system command fails
-                        emit_log("SUCCESS", "⚠️ Không gọi được lệnh in. Đã ghi nhận hóa đơn giả lập thành công!", None);
-                        let _ = std::fs::remove_file(file_path);
-                        return Ok(Json(serde_json::json!({ "success": true, "message": "In giả lập thành công" })));
+                    Err(e) => {
+                        let _ = std::fs::remove_file(&file_path);
+                        let err_msg = format!("Lỗi: Không thể chạy lệnh in 'lp' của hệ thống: {}", e);
+                        emit_log("ERROR", &err_msg, None);
+                        return Err((StatusCode::INTERNAL_SERVER_ERROR, err_msg));
                     }
                 }
             }
         }
-        let _ = std::fs::remove_file(file_path);
+        let _ = std::fs::remove_file(&file_path);
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, "Lỗi: Không thể tạo tệp in tạm thời trên đĩa.".to_string()));
     }
 
     // Windows native printing placeholder (falls back to console in debug)
     #[cfg(not(target_os = "macos"))]
     {
         emit_log("SUCCESS", "In hóa đơn thành công (Chế độ giả lập Win/Linux)", None);
+        return Ok(Json(serde_json::json!({ "success": true, "message": "In thành công" })));
     }
-
-    Ok(Json(serde_json::json!({ "success": true, "message": "In thành công" })))
 }
 
 
