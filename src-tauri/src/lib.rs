@@ -121,12 +121,131 @@ async fn handle_print(Json(payload): Json<PrintRequest>) -> Result<Json<serde_js
         return Err((StatusCode::INTERNAL_SERVER_ERROR, "Lỗi: Không thể tạo tệp in tạm thời trên đĩa.".to_string()));
     }
 
-    // Windows native printing placeholder (falls back to console in debug)
-    #[cfg(not(target_os = "macos"))]
+    // Windows native raw printing
+    #[cfg(target_os = "windows")]
     {
-        emit_log("SUCCESS", "In hóa đơn thành công (Chế độ giả lập Win/Linux)", None);
+        let target_printer = if payload.printer == "default" || payload.printer.is_empty() {
+            match get_windows_default_printer() {
+                Some(p) => p,
+                None => {
+                    let err_msg = "Lỗi: Không tìm thấy máy in mặc định trên Windows. Vui lòng cấu hình máy in mặc định hoặc chọn cụ thể trong Cài đặt.".to_string();
+                    emit_log("ERROR", &err_msg, None);
+                    return Err((StatusCode::INTERNAL_SERVER_ERROR, err_msg));
+                }
+            }
+        } else {
+            payload.printer.clone()
+        };
+
+        match print_raw_windows(&target_printer, &raw_bytes) {
+            Ok(_) => {
+                emit_log("SUCCESS", "Hóa đơn đã được gửi thành công đến Windows Spooler!", None);
+                return Ok(Json(serde_json::json!({ "success": true, "message": "In thành công" })));
+            }
+            Err(e) => {
+                let err_msg = format!("Lỗi in trên Windows: {}", e);
+                emit_log("ERROR", &err_msg, None);
+                return Err((StatusCode::INTERNAL_SERVER_ERROR, err_msg));
+            }
+        }
+    }
+
+    // Linux or other platforms fallback
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    {
+        emit_log("SUCCESS", "In hóa đơn thành công (Chế độ giả lập Linux/Khác)", None);
         return Ok(Json(serde_json::json!({ "success": true, "message": "In thành công" })));
     }
+}
+
+
+#[cfg(target_os = "windows")]
+fn get_windows_default_printer() -> Option<String> {
+    use winapi::um::winspool::GetDefaultPrinterW;
+    use winapi::shared::minwindef::DWORD;
+    use std::ptr;
+
+    let mut size: DWORD = 0;
+    unsafe {
+        GetDefaultPrinterW(ptr::null_mut(), &mut size);
+    }
+
+    if size == 0 {
+        return None;
+    }
+
+    let mut buffer: Vec<u16> = vec![0; size as usize];
+    unsafe {
+        if GetDefaultPrinterW(buffer.as_mut_ptr(), &mut size) != 0 {
+            let printer_name = String::from_utf16_lossy(&buffer);
+            return Some(printer_name.trim_matches('\0').to_string());
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn print_raw_windows(printer_name: &str, data: &[u8]) -> Result<(), String> {
+    use std::ptr;
+    use winapi::um::winspool::{OpenPrinterW, StartDocPrinterW, StartPagePrinter, WritePrinter, EndPagePrinter, EndDocPrinter, ClosePrinter, DOC_INFO_1W};
+    use winapi::shared::minwindef::DWORD;
+
+    let mut printer_name_wide: Vec<u16> = printer_name.encode_utf16().chain(Some(0)).collect();
+    let mut h_printer = ptr::null_mut();
+
+    unsafe {
+        if OpenPrinterW(printer_name_wide.as_mut_ptr(), &mut h_printer, ptr::null_mut()) == 0 {
+            return Err("Không thể mở kết nối tới máy in. Hãy kiểm tra lại tên kết nối máy in.".to_string());
+        }
+    }
+
+    struct PrinterGuard(winapi::shared::ntdef::HANDLE);
+    impl Drop for PrinterGuard {
+        fn drop(&mut self) {
+            unsafe {
+                ClosePrinter(self.0);
+            }
+        }
+    }
+    let _guard = PrinterGuard(h_printer);
+
+    let doc_name_wide: Vec<u16> = "MC Print Agent Job".encode_utf16().chain(Some(0)).collect();
+    let datatype_wide: Vec<u16> = "RAW".encode_utf16().chain(Some(0)).collect();
+
+    let mut doc_info = DOC_INFO_1W {
+        pDocName: doc_name_wide.as_ptr() as *mut u16,
+        pOutputFile: ptr::null_mut(),
+        pDatatype: datatype_wide.as_ptr() as *mut u16,
+    };
+
+    unsafe {
+        let doc_id = StartDocPrinterW(h_printer, 1, &mut doc_info as *mut _ as *mut u8);
+        if doc_id == 0 {
+            return Err("Không thể khởi động tác vụ in trên Windows spooler.".to_string());
+        }
+
+        if StartPagePrinter(h_printer) == 0 {
+            let _ = EndDocPrinter(h_printer);
+            return Err("Không thể tạo trang in thô (StartPagePrinter).".to_string());
+        }
+
+        let mut bytes_written: DWORD = 0;
+        let success = WritePrinter(
+            h_printer,
+            data.as_ptr() as *mut _,
+            data.len() as DWORD,
+            &mut bytes_written,
+        );
+
+        let _ = EndPagePrinter(h_printer);
+        let _ = EndDocPrinter(h_printer);
+
+        if success == 0 {
+            return Err("Lỗi khi ghi dữ liệu ra máy in.".to_string());
+        }
+    }
+
+    Ok(())
 }
 
 
@@ -137,6 +256,16 @@ fn get_system_printers() -> Vec<String> {
         if let Ok(output) = Command::new("lpstat").arg("-e").output() {
             let printers = String::from_utf8_lossy(&output.stdout);
             return printers.lines().map(|s| s.to_string()).collect();
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(output) = Command::new("powershell")
+            .args(&["-NoProfile", "-Command", "Get-Printer | Select-Object -ExpandProperty Name"])
+            .output()
+        {
+            let printers = String::from_utf8_lossy(&output.stdout);
+            return printers.lines().map(|s| s.to_string()).filter(|s| !s.is_empty()).collect();
         }
     }
     vec!["default".to_string()]

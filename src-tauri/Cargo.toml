@@ -29,6 +29,10 @@ chrono = "0.4"
 base64 = "0.21"
 tauri-plugin-autostart = "2"
 
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["winspool", "minwindef", "errhandlingapi"] }
+
+
 
 
 

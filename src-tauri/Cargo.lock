@@ -2081,6 +2081,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tokio",
  "tower-http 0.5.2",
+ "winapi",
 ]
 
 [[package]]
