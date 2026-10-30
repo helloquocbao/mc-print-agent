@@ -6,7 +6,7 @@ import "./App.css";
 
 interface AppLog {
   timestamp: string;
-  level: "INFO" | "SUCCESS" | "ERROR";
+  level: "INFO" | "SUCCESS" | "WARN" | "ERROR";
   message: string;
   receipt_preview?: string;
 }

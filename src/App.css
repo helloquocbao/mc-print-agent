@@ -309,6 +309,11 @@ body {
   color: #F87171;
 }
 
+.log-badge.warn {
+  background: rgba(245, 158, 11, 0.15);
+  color: #FBBF24;
+}
+
 .log-message {
   color: #D1D5DB;
   line-height: 1.4;

@@ -5,6 +5,11 @@ use std::net::SocketAddr;
 use std::fs::File;
 use std::io::Write;
 use std::process::Command;
+use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 #[derive(serde::Deserialize, Clone, serde::Serialize)]
 struct PrintItem {
@@ -56,6 +61,36 @@ fn strip_esc_pos(raw: &str) -> String {
         .replace("\x0A", "\n")
 }
 
+// Guard against the client firing the same bill too many times in a row.
+// Identical payloads (same printer + same bytes) seen within the window are
+// printed at most MAX_IDENTICAL_PRINTS times; extra ones are dropped.
+const DUPLICATE_WINDOW_SECS: u64 = 10;
+const MAX_IDENTICAL_PRINTS: u32 = 2;
+
+static RECENT_JOBS: OnceLock<Mutex<HashMap<u64, (Instant, u32)>>> = OnceLock::new();
+
+fn is_excess_duplicate(printer: &str, raw_bytes: &[u8]) -> bool {
+    let mut hasher = DefaultHasher::new();
+    printer.hash(&mut hasher);
+    raw_bytes.hash(&mut hasher);
+    let key = hasher.finish();
+
+    let window = Duration::from_secs(DUPLICATE_WINDOW_SECS);
+    let now = Instant::now();
+    let mut jobs = RECENT_JOBS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    jobs.retain(|_, (first_seen, _)| now.duration_since(*first_seen) < window);
+
+    let entry = jobs.entry(key).or_insert((now, 0));
+    if entry.1 >= MAX_IDENTICAL_PRINTS {
+        return true;
+    }
+    entry.1 += 1;
+    false
+}
+
 // REST HTTP handler for processing print requests from the web app
 async fn handle_print(Json(payload): Json<PrintRequest>) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let mut raw_bytes = Vec::new();
@@ -76,6 +111,12 @@ async fn handle_print(Json(payload): Json<PrintRequest>) -> Result<Json<serde_js
 
     let clean_preview = strip_esc_pos(&preview_text);
     emit_log("INFO", &format!("Nhận lệnh in hóa đơn qua máy in: {}", payload.printer), Some(&clean_preview));
+
+    if is_excess_duplicate(&payload.printer, &raw_bytes) {
+        emit_log("WARN", &format!("Bỏ qua lệnh in trùng: hóa đơn này đã in đủ {} bản trong {} giây.", MAX_IDENTICAL_PRINTS, DUPLICATE_WINDOW_SECS), None);
+        // Report success so the client does not retry
+        return Ok(Json(serde_json::json!({ "success": true, "message": "Bỏ qua lệnh in trùng" })));
+    }
 
     // Handle Native macOS RAW CUPS printing
     #[cfg(target_os = "macos")]
